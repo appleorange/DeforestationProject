@@ -1,0 +1,102 @@
+var start = '2021-01-01'
+var end = '2022-08-01'
+
+var point = ee.Geometry.Point(-53.78, -10.8)
+var patch = point.buffer(50).bounds()
+Map.addLayer(patch)
+Map.centerObject(patch)
+
+//function to create mask from SmmaryQA
+var maskQA = function(image) {
+  return image.updateMask(image.select("SummaryQA").lte(1));
+};
+
+var modisCol = ee.ImageCollection('MODIS/006/MOD13A2')
+  .filterBounds(patch)
+  .filterDate(start, end)
+  .select('NDVI', 'SummaryQA', 'EVI');
+var S2_data = modisCol.map(maskQA).select('EVI');
+
+
+// Get S2 data 
+// var S2_data = ee.ImageCollection('COPERNICUS/S2_SR')
+//     .filterBounds(patch).filterDate(start, end);
+
+print('no. of S2 images', S2_data.size());
+
+var originalCollection = S2_data;
+
+  print ('no. of cloud-free S2 images', originalCollection.size())
+
+// Moving-Window Smoothing
+
+// Specify the time-window
+var days = 15;
+
+// Convert to milliseconds 
+var millis = ee.Number(days).multiply(1000*60*60*24);
+
+// We use a 'save-all join' to find all images 
+// that are within the time-window
+
+// The join will add all matching images into a
+// new property called 'images'
+var join = ee.Join.saveAll({
+  matchesKey: 'images'
+});
+
+// This filter will match all images that are captured
+// within the specified day of the source image
+var diffFilter = ee.Filter.maxDifference({
+  difference: millis,
+  leftField: 'system:time_start', 
+  rightField: 'system:time_start'
+});
+
+
+var joinedCollection = join.apply({
+  primary: originalCollection, 
+  secondary: originalCollection, 
+  condition: diffFilter
+});
+
+print('Joined Collection', joinedCollection);
+
+// Each image in the joined collection will contain
+// matching images in the 'images' property
+// Extract and return the mean of matched images
+var extractAndComputeMean = function(image) {
+  var matchingImages = ee.ImageCollection.fromImages(image.get('images'));
+  var meanImage = matchingImages.reduce(
+    ee.Reducer.mean().setOutputs(['moving_average']))
+  return ee.Image(image).addBands(meanImage)
+}
+
+var smoothedCollection = ee.ImageCollection(
+  joinedCollection.map(extractAndComputeMean));
+
+print('Smoothed Collection', smoothedCollection)
+
+// Define the chart and print it to the console.
+
+// Display a time-series chart
+var chart_EVI = ui.Chart.image.series({
+  imageCollection: smoothedCollection.select(['EVI']), //, 'EVI_moving_average']),
+  region: patch,
+  reducer: ee.Reducer.mean(),
+  scale: 20
+}).setOptions({
+      title: 'EVI Time Series',
+      interpolateNulls: false,
+      vAxis: {title: 'EVI', viewWindow: {min: 0, max: 8000}},
+      hAxis: {title: '', format: 'YYYY-MM'},
+      lineWidth: 1,
+      pointSize: 4,
+      series: {
+        0: {color: '#66c2a4', lineDashStyle: [1, 1], pointSize: 2}, // Original
+        //1: {color: '#238b45', lineWidth: 2 }, // Smoothed
+      },
+
+    })
+print(chart_EVI);
+
